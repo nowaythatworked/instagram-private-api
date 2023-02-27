@@ -2,7 +2,9 @@ import { defaultsDeep, inRange, random } from 'lodash';
 import { createHmac } from 'crypto';
 import { Subject } from 'rxjs';
 import { AttemptOptions, retry } from '@lifeomic/attempt';
-import * as request from 'request-promise';
+//import * as request from 'request-promise';
+import { proxies } from 'http2-wrapper';
+import got, { Agents, Options as OptionsInit } from 'got';
 import { Options, Response } from 'request';
 import { IgApiClient } from './client';
 import {
@@ -24,6 +26,8 @@ import JSONbigInt = require('json-bigint');
 const JSONbigString = JSONbigInt({ storeAsString: true });
 
 import debug from 'debug';
+import { URL } from 'url';
+import { OptionsWithUrl } from 'request-promise';
 
 type Payload = { [key: string]: any } | string;
 
@@ -56,20 +60,38 @@ export class Request {
     return resolveWithFullResponse ? response : response.body;
   }
 
-  public async send<T = any>(userOptions: Options, onlyCheckHttpStatus?: boolean): Promise<IgResponse<T>> {
+  public async send<T = any>(userOptions: OptionsWithUrl, onlyCheckHttpStatus?: boolean): Promise<IgResponse<T>> {
+    const baseUrl = 'https://i.instagram.com';
+    if (!userOptions.url.toString().startsWith(baseUrl)) {
+      userOptions.url = `https://i.instagram.com${userOptions.url}`;
+    }
+
+    let agents: Agents;
+    const proxy = this.client.state.proxyUrl;
+    if (proxy) {
+      const http2Proxy = {
+        proxyOptions: {
+          url: new URL(proxy),
+          rejectUnauthorized: false,
+        },
+      };
+      const agent = new proxies.Http2OverHttp(http2Proxy);
+      agents = { http2: agent };
+    }
+    const requestOptions: OptionsInit = {
+      resolveBodyOnly: false,
+      responseType: 'json',
+      agent: agents,
+      headers: this.getDefaultHeaders(),
+      method: 'GET',
+      http2: true,
+    };
     const options = defaultsDeep(
       userOptions,
       {
-        baseUrl: 'https://i.instagram.com/',
-        resolveWithFullResponse: true,
-        proxy: this.client.state.proxyUrl,
-        simple: false,
-        transform: Request.requestTransform,
-        jar: this.client.state.cookieJar,
-        strictSSL: false,
-        gzip: true,
-        headers: this.getDefaultHeaders(),
-        method: 'GET',
+        ...requestOptions,
+        paginate: { transform: Request.requestTransform },
+        cookieJar: this.client.state.cookieJar,
       },
       this.defaults,
     );
@@ -172,47 +194,58 @@ export class Request {
     return new IgResponseError(response);
   }
 
-  protected async faultTolerantRequest(options: Options) {
+  protected async faultTolerantRequest(options: OptionsInit) {
     try {
-      return await retry(async () => request(options), this.attemptOptions);
+      return await retry(
+        async () => got.extend({ prefixUrl: 'https://i.instagram.com' })(options),
+        this.attemptOptions,
+      );
     } catch (err) {
+      console.log('err', err);
       throw new IgNetworkError(err);
     }
   }
 
   public getDefaultHeaders() {
     return {
-      'User-Agent': this.client.state.appUserAgent,
-      'X-Ads-Opt-Out': this.client.state.adsOptOut ? '1' : '0',
-      // needed? 'X-DEVICE-ID': this.client.state.uuid,
-      'X-CM-Bandwidth-KBPS': '-1.000',
-      'X-CM-Latency': '-1.000',
-      'X-IG-App-Locale': this.client.state.language,
-      'X-IG-Device-Locale': this.client.state.language,
-      'X-Pigeon-Session-Id': this.client.state.pigeonSessionId,
-      'X-Pigeon-Rawclienttime': (Date.now() / 1000).toFixed(3),
-      'X-IG-Connection-Speed': `${random(1000, 3700)}kbps`,
-      'X-IG-Bandwidth-Speed-KBPS': '-1.000',
-      'X-IG-Bandwidth-TotalBytes-B': '0',
-      'X-IG-Bandwidth-TotalTime-MS': '0',
+      'user-agent': this.client.state.appUserAgent,
+      'x-ads-opt-out': this.client.state.adsOptOut ? '1' : '0',
+      'x-device-id': this.client.state.uuid,
+      'x-cm-bandwidth-kbps': '-1.000',
+      'x-cm-latency': '-1.000',
+      'x-ig-app-locale': this.client.state.language,
+      'x-ig-device-locale': this.client.state.language,
+      'x-ig-mapped-locale': this.client.state.language,
+      'x-pigeon-session-id': this.client.state.pigeonSessionId,
+      'x-pigeon-rawclienttime': (Date.now() / 1000).toFixed(3),
+      'x-ig-connection-speed': `${random(1000, 3700)}kbps`,
+      'x-ig-bandwidth-speed-kbps': '-1.000',
+      'x-ig-bandwidth-totalbytes-b': '0',
+      'x-ig-bandwidth-totaltime-ms': '0',
       'X-IG-EU-DC-ENABLED':
         typeof this.client.state.euDCEnabled === 'undefined' ? void 0 : this.client.state.euDCEnabled.toString(),
       'X-IG-Extended-CDN-Thumbnail-Cache-Busting-Value': this.client.state.thumbnailCacheBustingValue.toString(),
-      'X-Bloks-Version-Id': this.client.state.bloksVersionId,
-      'X-MID': this.client.state.extractCookie('mid')?.value,
-      'X-IG-WWW-Claim': this.client.state.igWWWClaim || '0',
-      'X-Bloks-Is-Layout-RTL': this.client.state.isLayoutRTL.toString(),
-      'X-IG-Connection-Type': this.client.state.connectionTypeHeader,
-      'X-IG-Capabilities': this.client.state.capabilitiesHeader,
-      'X-IG-App-ID': this.client.state.fbAnalyticsApplicationId,
-      'X-IG-Device-ID': this.client.state.uuid,
-      'X-IG-Android-ID': this.client.state.deviceId,
-      'Accept-Language': this.client.state.language.replace('_', '-'),
-      'X-FB-HTTP-Engine': 'Liger',
+      'x-ig-app-startup-country': 'unknown',
+      'x-fb-client-ip': 'True',
+      'x-fb-server-cluster': 'True',
+      will_sound_on: '0',
+      is_dark_mode: '0',
+      priority: 'u=0',
+      'x-ig-EU-DC-ENABLED':
+        typeof this.client.state.euDCEnabled === 'undefined' ? void 0 : this.client.state.euDCEnabled.toString(),
+      'x-bloks-version-id': this.client.state.bloksVersionId,
+      'x-mid': this.client.state.extractCookie('mid')?.value,
+      'x-ig-www-claim': this.client.state.igWWWClaim || '0',
+      'x-bloks-is-layout-rtl': this.client.state.isLayoutRTL.toString(),
+      'x-ig-connection-type': this.client.state.connectionTypeHeader,
+      'x-ig-capabilities': this.client.state.capabilitiesHeader,
+      'x-ig-app-id': this.client.state.fbAnalyticsApplicationId,
+      'x-ig-device-id': this.client.state.uuid,
+      'x-ig-android-id': this.client.state.deviceId,
+      'accept-language': this.client.state.language.replace('_', '-'),
+      'x-fb-http-engine': 'Liger',
       Authorization: this.client.state.authorization,
-      Host: 'i.instagram.com',
-      'Accept-Encoding': 'gzip',
-      Connection: 'close',
+      'accept-encoding': 'gzip',
     };
   }
 }

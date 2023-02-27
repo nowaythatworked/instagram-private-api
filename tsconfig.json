@@ -3,7 +3,7 @@
     "lib": ["es7"],
     "declaration": true,
     "esModuleInterop": false,
-    "module": "commonjs",
+    "module": "CommonJS",
     "moduleResolution": "node",
     "noImplicitAny": false,
     "removeComments": true,
